@@ -16,6 +16,12 @@ class ProductionGoal(BaseModel):
     def _normalise_part(cls, v: str) -> str:
         return v.strip().lower().replace(" ", "")
 
+    @field_validator("deadline")
+    @classmethod
+    def _assume_local_time(cls, v: datetime | None) -> datetime | None:
+        # The optimiser subtracts an aware "now"; naive deadlines would raise.
+        return v.astimezone() if v is not None and v.tzinfo is None else v
+
 
 class StageAnalysis(BaseModel):
     part: str
