@@ -1,189 +1,312 @@
-# Factory Agent (Google ADK)
+# Agentic Production Planner
 
-A factory production optimiser. It connects to a live MQTT-based factory
-simulator and uses Google Gemini (via Vertex AI) to:
+[![CI](https://github.com/zhangyuan-nus/agentic-production-planner/actions/workflows/ci.yml/badge.svg)](https://github.com/zhangyuan-nus/agentic-production-planner/actions/workflows/ci.yml)
 
-1. Parse natural-language production orders into a structured goal, and
-2. Summarise the optimiser's plan into a manager-friendly report.
+Turns a plain-English production order into a machine-level plan for a simulated four-factory
+plant, asks an operator to approve it, dispatches it over MQTT, and switches the machines back off
+once the order is done.
 
-The optimiser inspects current machine states across four factories,
-decides which idle machines to enable to meet a target part/quantity by
-a deadline, publishes the plan over MQTT, and then watches stock until
-the order is fulfilled before sending a stop instruction.
+```console
+$ python -m production_planner --order "make 500 p123 by 6pm today, use existing stock"
+```
 
----
+An LLM (Gemini) handles the language: reading the order and explaining the plan. Everything
+numeric, from bill-of-materials expansion and stock netting to machine selection and timing, is
+deterministic Python with unit tests.
 
-## 1. Prerequisites
+This was my part of *Agentic AI for Industry 5.0*, a final-year design capstone at the National
+University of Singapore (see [Background](#background)).
 
-You will need:
+## How it works
 
-- **Python 3.10+**
-- **An MQTT broker** running on `localhost:1883`. The host can be
-  changed in `production_planner/config.py` (`MQTT_BROKER`). Quick install:
-  - **Windows:** download the installer from
-    <https://mosquitto.org/download/>, install it, then start the
-    service from `services.msc` (or `net start mosquitto` from an
-    admin prompt).
-  - **macOS:** `brew install mosquitto && brew services start mosquitto`
-  - **Linux (Debian/Ubuntu):** `sudo apt install mosquitto && sudo systemctl start mosquitto`
+```mermaid
+flowchart LR
+    order(["Order text"]) --> agent["Order agent<br/>(Gemini)"]
+    agent -->|ProductionGoal| optimiser["Optimiser<br/>(deterministic)"]
+    plant[("Factory testbed")] -->|"Factory/n/Information"| optimiser
+    optimiser -->|plan| review["Plan table +<br/>Gemini summary"]
+    review --> approve{"Operator<br/>approves?"}
+    approve -->|yes| executor["Executor +<br/>monitor"]
+    executor -->|"optimizer/instructions"| plant
+```
 
-  Verify it's listening with `netstat -an | findstr 1883` (Windows) or
-  `lsof -i :1883` (macOS / Linux).
+1. **Order agent** ([`order_agent.py`](production_planner/order_agent.py)). Gemini turns free
+   text into a `ProductionGoal` using structured output against a Pydantic schema. It is given
+   the operator's local time, so "by 6pm today" becomes an absolute deadline. It never sees stock
+   levels or does arithmetic.
+2. **Snapshots** ([`snapshot.py`](production_planner/snapshot.py)). Every factory publishes its
+   machine states and container levels each second; the planner takes the latest message from
+   each factory.
+3. **Optimiser** ([`optimizer.py`](production_planner/optimizer.py)). Expands the order through
+   the bill of materials and subtracts existing stock top-down. It then enables idle machines at
+   the slowest stage until no stage can be sped up, and a trim pass drops any machine whose
+   removal doesn't change the finish time. The deadline check includes the 10 s machine start-up.
+4. **Review** ([`cli.py`](production_planner/cli.py), [`summary.py`](production_planner/summary.py)).
+   The operator sees a stage-by-stage table and, optionally, a Gemini-written summary for a plant
+   manager. Nothing is published until they approve.
+5. **Dispatch and auto-stop** ([`executor.py`](production_planner/executor.py)). The approved
+   plan is published to `optimizer/instructions`. The planner then watches stock, and when the
+   order is complete it sends a stop message that switches off only the machines it turned on.
 
-- **The factory simulator** (a separate project, not included here)
-  publishing on the topics `Factory/<id>/Information`. Without it the
-  optimiser will still run but will warn that no machines are active.
-  The optimiser expects a simulator that:
-  - Publishes one JSON message per factory on `Factory/<id>/Information`
-    every few seconds, containing `machines_information` (machine state
-    per machine), `container_information` (per-part stock levels), and
-    optionally `lorry_cargo`.
-  - Subscribes to `optimizer/instructions` and reacts to
-    `optimization_plan` (enable machines) and `optimization_plan_stop`
-    (disable machines) payloads.
+## Example
 
-  See `production_planner/snapshot.py` and `production_planner/optimization_runner.py`
-  for the exact field shapes.
+[`examples/snapshot.json`](examples/snapshot.json) is a plant state in the testbed's payload
+format. Some machines are already running at degraded rates, there is stock in containers and on
+a lorry, and an operator has forced down F3M5b, the backup p123 machine. Planning 500 units of
+p123 against it needs no broker or API key:
 
-- **A Google Cloud project with Vertex AI enabled**, plus a
-  service-account key JSON file with the `Vertex AI User` role.
+```console
+$ python -m production_planner --part p123 --qty 500 --use-existing-stock \
+      --snapshot-file examples/snapshot.json --no-llm
+[planner] Loaded snapshots for factories 1, 2, 3, 4 from examples/snapshot.json
 
-- *(Optional)* A Telegram bot token and chat ID, only if you want
-  Telegram alerts.
+===== PRODUCTION PLAN =====
+  Order       : 500 x p123 (deadline: none)
+  Feasible    : yes
+  Estimate    : 50s of production + 10s machine start-up
+  Bottleneck  : p123
+  Stock       : drawing p1 x120, p2 x80, p3 x35
 
----
+  Stage  Factory  Machines on   Rate/s  Stock  To make  Time s
+  p1     F1       F1M1             8.0    120      380    47.5
+  p2     F2       F2M2            10.0     80      420    42.0
+  p12    F2       F2M3, F2M3b     19.0      0      500    26.3
+  p3     F3       F3M4, F3M4b     15.0     35      465    31.0
+  p123   F3       F3M5            10.0      0      500    50.0  <- bottleneck
 
-## 2. Install
+  Machine actions (3):
+    ENABLE  F3M5   Factory 3, part p123 (+10/s)
+    ENABLE  F3M4b  Factory 3, part p3 (+10/s)
+    ENABLE  F2M3b  Factory 2, part p12 (+10/s)
 
-From the repository root:
+  Warnings:
+    - Machine(s) F3M5b are forced down (state -2) and were left out of the plan.
+    - Trim pass removed 2 redundant machine enable(s); the remaining set still meets the
+      bottleneck time.
+    ...
 
-**Windows (PowerShell):**
+[planner] Offline mode: this payload would be published to 'optimizer/instructions':
+{ ... }
+```
 
-```powershell
+With F3M5b forced down, p123 can only be made at 10 units/s, so it is the bottleneck at 50 s.
+The greedy pass also enabled F1M1b and F2M2b, but p1 and p2 already finish inside 50 s on one
+machine each, so the trim pass dropped them.
+
+## Design decisions
+
+- **The LLM never touches the numbers.** Gemini translates (order text to schema) and explains
+  (plan to summary). Stock, demand and capacity are computed in plain Python, so plans are
+  repeatable and every number in them is covered by tests. The order schema is deliberately small,
+  and Pydantic validates the model's output before the optimiser sees it.
+- **A person approves every dispatch.** Plans are shown before anything is published. If the
+  model rates its own parse below 0.6 confidence, the parsed order is shown back to the operator
+  for confirmation before planning starts.
+- **Operators' decisions win.** The testbed would accept an enable for a machine an operator has
+  forced down, so the planner never sends one.
+- **Fewest machines for the fastest finish.** The greedy pass finds the fastest achievable time,
+  and the trim pass removes machines that don't contribute to it.
+- **It cleans up after itself.** The stop message disables only the machines the plan enabled,
+  so anything that was already running is left alone.
+- **Time zones are explicit.** Deadlines are timezone-aware throughout, and a time without an
+  offset is read as the operator's local time.
+- **Each dependency is optional.** Without an API key, use `--part`/`--qty` and `--no-llm`.
+  Without a broker, plan from a saved snapshot. If Gemini fails mid-run, only the summary is lost.
+
+## Quick start
+
+Python 3.10 or newer:
+
+```bash
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -e .
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install -e ".[dev]"
 ```
 
-**macOS / Linux:**
+**1. Plan offline.** Run the [example](#example) above.
+
+**2. Run the full loop locally.** You need an MQTT broker on `localhost:1883`, for example
+[Mosquitto](https://mosquitto.org/download/) (`brew install mosquitto`,
+`sudo apt install mosquitto`, or the Windows installer). Start the mock testbed from the example
+state:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
+python -m mock_testbed --from-snapshot examples/snapshot.json
 ```
 
----
+Then, in a second terminal, plan, approve and watch the order complete:
 
-## 3. Configure
+```console
+$ python -m production_planner --part p123 --qty 500 --use-existing-stock --no-llm
+...
+Apply these 3 machine action(s)? [Y/n]: y
+[planner] Published plan to 'optimizer/instructions'.
 
-1. Copy `.env.example` to `.env` in the repository root.
-2. Place your GCP service-account key somewhere on disk (e.g.
-   `gcp-key.json` in the repository root; it is git-ignored).
-3. Edit `.env` and fill in:
-   - `GOOGLE_CLOUD_PROJECT` — your GCP project ID.
-   - `GOOGLE_APPLICATION_CREDENTIALS` — absolute path to your key file.
-     On Windows use forward slashes or double backslashes, e.g.
+===== MONITORING PRODUCTION =====
+  Target part       : p123
+  Baseline stock    : 0
+  Units to produce  : 500
+  Stop threshold    : 500 (baseline + units_to_produce)
+  Poll interval     : 2s  |  Max wait: 300s
+  [   0.0s]  p123 stock =      0  produced =      0/500  (  0.0%)
+  [  16.0s]  p123 stock =     50  produced =     50/500  ( 10.0%)
+  [  22.1s]  p123 stock =    110  produced =    110/500  ( 22.0%)
+  ...
+  [  56.1s]  p123 stock =    450  produced =    450/500  ( 90.0%)
+  [  62.2s]  p123 stock =    510  produced =    510/500  (100.0%)
 
-     ```text
-     C:/Users/you/projects/agentic-production-planner/gcp-key.json
-     ```
+[planner] Order complete: produced 510 unit(s) of p123.
+[planner] Published stop instructions to 'optimizer/instructions' (disabling 3 machine(s)).
+```
 
-   - `TELEGRAM_*` values, only if you're using the Telegram features.
+The order completed 62 s after dispatch, against an estimate of 10 s of start-up plus 50 s of
+production. To see the safety rule, force the other p123 machine down with
+`mosquitto_pub -t "F3M5 down" -m true` and plan again: the planner reports the order as
+infeasible rather than reviving either machine.
 
----
-
-## 4. Verify your setup (no MQTT needed)
-
-The order-agent step only requires working Vertex AI credentials, so
-use it to confirm setup:
+**3. Add Gemini.** Copy [`.env.example`](.env.example) to `.env` and set `GEMINI_API_KEY` (from
+[Google AI Studio](https://aistudio.google.com/apikey)) or the Vertex AI variables. Then:
 
 ```bash
-python -m production_planner.order_agent "produce 300 p123"
+python -m production_planner --order "make 500 p123 by 6pm today, use existing stock"
+python -m production_planner.order_agent --interactive    # try the order agent on its own
 ```
 
-If you see a parsed-order table printed, your Python deps and GCP auth
-are good. If you see an authentication error, double-check
-`GOOGLE_APPLICATION_CREDENTIALS` and that Vertex AI is enabled on the
-project.
+The default model is `gemini-3.8-flash`; set `GEMINI_MODEL` to use another.
 
----
+## Command line
 
-## 5. Run the full optimiser
+| Option | Effect |
+| --- | --- |
+| `--order TEXT` | Natural-language order, parsed by Gemini |
+| `--part`, `--qty`, `--deadline` | The same order as flags, with no LLM involved |
+| `--use-existing-stock` | Count container and lorry stock against the order |
+| `--snapshot-file FILE` | Plan against a saved snapshot and print the payload instead of publishing |
+| `--no-llm` | Skip the Gemini summary |
+| `--auto-confirm` | Publish without the approval prompt |
+| `--no-monitor` | Dispatch and exit, leaving the machines on |
 
-Make sure your MQTT broker and the factory simulator are both running,
-then from the project root:
+`python -m production_planner --help` lists every option. The exit code is 0 when the run
+succeeds or is cancelled, 1 for an infeasible plan or a monitor timeout, and 2 for usage,
+connection and order-parsing errors.
 
-**Natural-language order (uses Gemini to parse the request):**
+## MQTT contract
 
-```bash
-python -m production_planner.optimization_runner --order "make 500 p12 by tomorrow 8am, use existing stock"
+The planner uses the same topics and payloads as the team's testbed.
+
+**Factories to planner.** Each factory publishes on `Factory/<n>/Information` every second
+(abridged):
+
+```json
+{
+  "machines_information": {
+    "Machine 5": {"state": -1},
+    "Machine 5b": {"state": -2}
+  },
+  "container_information": {
+    "Container A": {"part": "P123", "amount": 0}
+  },
+  "lorry_cargo": {
+    "Lorry 1": {"P1": 40, "P2": 0, "P12": 0, "P23": 0}
+  }
+}
 ```
 
-**Structured form (no LLM parsing of the request):**
+| Machine state | Meaning | Units per second |
+| --- | --- | --- |
+| 0, 1, 2, 3 | Working, slowing as it wears | 10, 9, 8, 5 |
+| 4 to 9 | Maintenance or failure | 0 |
+| -1 | Disabled | 0 |
+| -2 | Forced down by an operator | 0 |
 
-```bash
-python -m production_planner.optimization_runner --part p123 --qty 500
-python -m production_planner.optimization_runner --part p12 --qty 200 --deadline "2027-01-15T18:00:00"
-python -m production_planner.optimization_runner --part p234 --qty 500 --use-existing-stock
+**Planner to factories.** Plans are published on `optimizer/instructions`:
+
+```json
+{
+  "type": "optimization_plan",
+  "version": 1,
+  "goal": {"target_part": "p123", "quantity": 500, "deadline": null},
+  "actions": [
+    {"machine_id": "F3M5", "factory_id": "3", "part": "p123", "action": "enable"}
+  ]
+}
 ```
 
-**Useful flags:**
+The stop message has type `optimization_plan_stop` and the same actions with
+`"action": "disable"`. A newly enabled machine starts producing after 10 s.
 
-- `--no-llm` — skip the Gemini plan-summary step.
-- `--auto-confirm` — don't prompt for Y/N before publishing instructions
-  to MQTT.
-- `--no-monitor` — don't watch for order completion / auto-stop machines.
-- `--mqtt-timeout 10` — how long to wait for factory snapshots (seconds).
-- `--monitor-interval 2` and `--monitor-timeout 0` — completion-watch
-  tuning.
+**The plant.** Every machine has a backup with a `b` suffix (F3M5b), and lorries carry p1, p2, p12
+and p23 between factories.
 
----
+| Factory | Machine | Makes | From |
+| --- | --- | --- | --- |
+| F1 | M1 | p1 | |
+| F2 | M2 | p2 | |
+| F2 | M3 | p12 | p1 + p2 |
+| F3 | M4 | p3 | |
+| F3 | M5 | p123 | p12 + p3 |
+| F3 | M6 | p23 | p2 + p3 |
+| F4 | M7 | p4 | |
+| F4 | M8 | p234 | p23 + p4 |
 
-## 6. What it does end-to-end
-
-1. *(Optional)* Sends your free-text order to Gemini → structured
-   `ProductionGoal`.
-2. Subscribes to `Factory/+/Information` over MQTT to snapshot current
-   machine states and stock levels.
-3. Runs `optimizer.compute_plan(...)` to decide which machines to
-   enable.
-4. Prints the raw plan plus a Gemini-written manager-friendly summary.
-5. After you confirm, publishes the action plan to the MQTT topic
-   `optimizer/instructions`.
-6. Watches stock until the order quantity has been produced, then
-   publishes a stop payload that disables the machines it enabled.
-
----
-
-## 7. Project layout
+## Project layout
 
 ```text
-agentic-production-planner/
-  README.md
-  pyproject.toml
-  .env.example              ← copy to .env and fill in
-  production_planner/
-    config.py               ← MQTT broker, model name, parts/machines map
-    order_agent.py          ← natural-language → ProductionGoal (Gemini)
-    optimizer.py            ← core planning algorithm
-    optimization_runner.py  ← CLI entry point (the one you'll run)
-    snapshot.py             ← MQTT snapshot collector
-    models.py               ← Pydantic schemas
+production_planner/
+  cli.py          command line: order, plan, approval, dispatch, auto-stop
+  order_agent.py  Gemini order parsing into a ProductionGoal
+  optimizer.py    BOM expansion, stock netting, machine selection, deadline check
+  snapshot.py     collects factory snapshots and totals the stock in them
+  executor.py     instruction payloads, publishing and the completion monitor
+  summary.py      Gemini plan summary for a plant manager
+  models.py       Pydantic models shared by the pipeline
+  config.py       plant layout, machine rates, MQTT and model settings
+  mqtt_io.py      MQTT connection helpers
+mock_testbed/     SimPy stand-in for the team's testbed (the model is in plant.py)
+examples/         sample factory snapshot
+tests/            pytest suite, run by CI on Python 3.10 to 3.13
 ```
 
----
+## Tests
 
-## 8. Common issues
+```bash
+pytest           # 67 tests; no broker or API key needed
+ruff check .
+```
 
-- **`ModuleNotFoundError: No module named 'production_planner'`** — you ran
-  the script from inside `production_planner/` instead of the repository root.
-  Run from the repository root and use
-  `python -m production_planner.optimization_runner ...`.
-- **`google.auth.exceptions.DefaultCredentialsError`** —
-  `GOOGLE_APPLICATION_CREDENTIALS` is wrong, or Vertex AI isn't enabled
-  on the project.
-- **`No snapshots received`** — your MQTT broker isn't running, or the
-  simulator isn't publishing on `Factory/+/Information`.
-- **Connection refused on MQTT** — change `MQTT_BROKER` in
-  `production_planner/config.py` if your broker is on another host.
+The suite covers the optimiser's arithmetic (including a diamond-shaped BOM in which two branches
+share a component), the order agent against a fake Gemini client, and the CLI's exit codes. It also
+runs a closed loop in which a plan is applied to the mock testbed and the order completes at the
+estimated time.
+
+## Limitations and future work
+
+- **Nominal rates.** The planner uses each machine's per-state rate. The team's full testbed also
+  moves parts along each internal link at 1 unit per second and carries parts between factories
+  by lorry, so orders there take longer than the estimate. The planner reports both as warnings
+  rather than modelling them; calibrating effective rates from observed throughput is the next
+  step.
+- **One part per order.** An order names a single target part. Combined orders ("500 p1 and
+  200 p12") would need demand aggregated across targets.
+- **Fastest plan, not leanest.** When a deadline has slack, the plan could use fewer machines and
+  still meet it.
+- **Snapshots can go stale.** The plan uses the snapshot read at the start. Re-reading machine
+  states just before publishing would catch changes made while the operator was reviewing.
+- **Approximate stop.** The monitor polls every 2 s, so the stop can arrive a couple of seconds of
+  production late (510 units instead of 500 in the run above).
+
+## Background
+
+*Agentic AI for Industry 5.0* was a four-person design capstone (EE4002D) at the National
+University of Singapore in AY2025/26, supervised by Dr Tham Chen Khong. The team built:
+
+- the SimPy factory testbed with its MQTT layer, and a monitoring agent that watches it for
+  anomalies (Li Zheng Ting)
+- a digital-twin simulation and a Google ADK multi-agent system (Loh Yong Teng)
+- a live digital-twin dashboard on Google Maps (Serzen Gurung)
+- this production-planning agent (Zhang Yuan)
+
+This repository contains only the production-planning agent. `mock_testbed/` is a simplified
+stand-in, added after the project, so the planner can be run end to end without the team's code.
+During the project the agent used Gemini 2.5 Flash through Vertex AI. Google has since retired
+that model on Vertex, so the default is now `gemini-3.8-flash`.
