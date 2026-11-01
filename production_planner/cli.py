@@ -35,6 +35,8 @@ from .summary import summarise_plan
 # Parses below this confidence always need an explicit go-ahead from the operator.
 LOW_CONFIDENCE = 0.6
 
+PART_CHOICES = ", ".join(sorted(PART_TO_MACHINE, key=lambda part: (len(part), part)))
+
 
 def _positive_int(value: str) -> int:
     try:
@@ -52,11 +54,14 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Plan and dispatch production orders across the four-factory testbed.",
     )
     order = parser.add_argument_group("order (either --order, or --part and --qty)")
-    order.add_argument("--order", help="natural-language order, parsed by the Gemini order agent")
-    order.add_argument("--part", help=f"target part: {', '.join(sorted(PART_TO_MACHINE))}")
-    order.add_argument("--qty", type=_positive_int, help="number of units to produce")
+    order.add_argument("--order", metavar="TEXT",
+                       help="natural-language order, parsed by the Gemini order agent")
+    order.add_argument("--part", help=f"target part: {PART_CHOICES}")
+    order.add_argument("--qty", metavar="N", type=_positive_int,
+                       help="number of units to produce")
     order.add_argument(
-        "--deadline", help="ISO-8601 deadline, e.g. 2026-04-17T18:00 (local time if no offset)"
+        "--deadline", metavar="TIME",
+        help="ISO-8601 deadline, e.g. 2026-04-17T18:00 (local time if no offset)",
     )
     order.add_argument(
         "--use-existing-stock",
@@ -66,12 +71,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
     flow = parser.add_argument_group("workflow")
     flow.add_argument(
-        "--snapshot-file",
+        "--snapshot-file", metavar="FILE",
         help="plan against a saved snapshot JSON instead of live MQTT (nothing is published)",
     )
     flow.add_argument(
-        "--mqtt-timeout", type=float, default=10,
-        help="seconds to wait for live factory snapshots (default: 10)",
+        "--mqtt-timeout", metavar="SECONDS", type=float, default=10,
+        help="how long to wait for live factory snapshots (default: 10)",
     )
     flow.add_argument("--no-llm", action="store_true", help="skip the Gemini plan summary")
     flow.add_argument("--show-json", action="store_true", help="also print the raw plan JSON")
@@ -90,12 +95,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="do not watch for completion or switch machines off afterwards",
     )
     monitor.add_argument(
-        "--monitor-interval", type=float, default=2.0,
-        help="seconds between completion checks (default: 2)",
+        "--monitor-interval", metavar="SECONDS", type=float, default=2.0,
+        help="time between completion checks (default: 2)",
     )
     monitor.add_argument(
-        "--monitor-timeout", type=float, default=0.0,
-        help="give up after N seconds (default 0 = 2x the estimate, clamped to 5 min .. 24 h)",
+        "--monitor-timeout", metavar="SECONDS", type=float, default=0.0,
+        help="give up after this long (default: 2x the estimate, 5 min to 24 h)",
     )
     return parser
 
@@ -147,8 +152,7 @@ def _goal_from_flags(args: argparse.Namespace, parser: argparse.ArgumentParser) 
         use_existing_stock=args.use_existing_stock,
     )
     if goal.target_part not in PART_TO_MACHINE:
-        valid = ", ".join(sorted(PART_TO_MACHINE))
-        parser.error(f"unknown part {args.part!r}; choose from {valid}")
+        parser.error(f"unknown part {args.part!r}; choose from {PART_CHOICES}")
     return goal
 
 

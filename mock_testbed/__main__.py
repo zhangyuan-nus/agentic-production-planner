@@ -41,8 +41,10 @@ def main(argv: list[str] | None = None) -> int:
         prog="mock_testbed",
         description="Simulate the four-factory testbed and bridge it to MQTT.",
     )
-    parser.add_argument("--broker", default=os.getenv("MQTT_BROKER", "127.0.0.1"))
-    parser.add_argument("--port", type=int, default=int(os.getenv("MQTT_PORT", "1883")))
+    parser.add_argument("--broker", metavar="HOST", default=os.getenv("MQTT_BROKER", "127.0.0.1"),
+                        help="MQTT broker host (default: $MQTT_BROKER or 127.0.0.1)")
+    parser.add_argument("--port", type=int, default=int(os.getenv("MQTT_PORT", "1883")),
+                        help="MQTT broker port (default: $MQTT_PORT or 1883)")
     parser.add_argument("--speed", type=float, default=1.0,
                         help="simulated seconds per real second (default: 1)")
     parser.add_argument("--from-snapshot", metavar="FILE",
@@ -51,7 +53,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="chance per second that a producing machine loses one health "
                              "state (default: 0)")
     parser.add_argument("--seed", type=int, help="random seed for --degrade")
-    parser.add_argument("--duration", type=float, help="stop after this many simulated seconds")
+    parser.add_argument("--duration", metavar="SECONDS", type=float,
+                        help="stop after this many simulated seconds")
     args = parser.parse_args(argv)
     if args.speed <= 0:
         parser.error("--speed must be positive")
