@@ -82,9 +82,9 @@ STATE_PROD_RATE: dict[int, float] = {0: 10.0, 1: 9.0, 2: 8.0, 3: 5.0}
 NEW_ENABLE_RATE: float = STATE_PROD_RATE[0]
 
 # NOTE: The simulator's internal transport (`m_c_move` and `c_m_move`) moves
-# at most 1 unit per timestep per link. In long-running steady state this can
-# cap realised throughput below the per-state machine rate, especially for
-# combiners. The optimiser surfaces this as a plan warning rather than
+# at most 1 unit per timestep per link. Once a machine's output bin fills, this
+# caps realised throughput below the per-state machine rate, for creators and
+# combiners alike. The optimiser surfaces this as a plan warning rather than
 # de-rating the numbers, so the headline capacity here is the machine's
 # nominal rate at its current state.
 

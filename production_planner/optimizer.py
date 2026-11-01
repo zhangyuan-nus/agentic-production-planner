@@ -22,8 +22,9 @@ The model is a simplified view of the simulator:
   warning and included in the deadline check, not subtracted from capacity).
 - Cross-factory transport latency for lorry-eligible parts is flagged as a
   warning rather than modeled numerically.
-- Internal transport caps (`m_c_move`/`c_m_move` at 1 unit/timestep) may
-  limit sustained throughput below the headline rate; flagged as a warning.
+- Internal transport caps (`m_c_move`/`c_m_move` at 1 unit/timestep per link)
+  limit sustained throughput below the headline rate at every stage; flagged
+  as a warning.
 """
 
 from __future__ import annotations
@@ -401,17 +402,12 @@ def compute_plan(
             f"~{STARTUP_SECONDS}s of startup ramp-up before producing."
         )
 
-    # --- transport-cap caveat for combination stages ---
-    combiner_stages = [
-        s.part for s in active_stages
-        if PART_DEPENDENCIES.get(s.part)  # has upstream deps -> combination stage
-    ]
-    if combiner_stages:
+    # --- transport-cap caveat ---
+    if active_stages:
         warnings.append(
-            "Combination stage(s) "
-            f"{', '.join(combiner_stages)} may be feed-limited by the "
-            "simulator's c_m_move (1 unit/timestep per input); actual sustained "
-            "throughput can be below the headline per-state rate."
+            "The full testbed moves parts between machines and containers at 1 unit "
+            "per timestep per link (m_c_move, c_m_move), so sustained throughput there "
+            "can be well below these per-state rates."
         )
 
     # --- cross-factory transport awareness ---
