@@ -17,13 +17,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.5"]
+testbed = ["simpy>=4.1"]
+dev = ["pytest>=8", "ruff>=0.5", "simpy>=4.1"]
 
 [project.scripts]
 production-planner = "production_planner.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["production_planner*"]
+include = ["production_planner*", "mock_testbed*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
