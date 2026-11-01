@@ -20,7 +20,7 @@ dependencies = [
 dev = ["pytest>=8", "ruff>=0.5"]
 
 [project.scripts]
-production-planner = "production_planner.optimization_runner:main"
+production-planner = "production_planner.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["production_planner*"]

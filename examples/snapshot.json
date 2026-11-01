@@ -1,0 +1,86 @@
+{
+  "1": {
+    "time": "2026-04-17 08:45:12",
+    "lorries_present": ["Lorry 1"],
+    "lorry_cargo": {
+      "Lorry 1": {"status": "loading", "present": true, "P1": 40, "P2": 0, "P12": 0, "P23": 0},
+      "Lorry 2": {"status": "-", "present": false, "P1": 0, "P2": 0, "P12": 0, "P23": 0},
+      "Lorry 3": {"status": "-", "present": false, "P1": 0, "P2": 0, "P12": 0, "P23": 0}
+    },
+    "machines_information": {
+      "Machine 1": {"state": 2, "OUT": 0, "totalPartsProduced": 160},
+      "Machine 1b": {"state": -1, "OUT": 0, "totalPartsProduced": 0}
+    },
+    "container_information": {
+      "Container 1": {"part": "P1", "amount": 80, "throughput": 0.4}
+    },
+    "process_information": {"Creation": {}, "Movement": {}, "Combination": {}}
+  },
+  "2": {
+    "time": "2026-04-17 08:45:12",
+    "lorries_present": [],
+    "lorry_cargo": {
+      "Lorry 1": {"status": "-", "present": false, "P1": 0, "P2": 0, "P12": 0, "P23": 0},
+      "Lorry 2": {"status": "-", "present": false, "P1": 0, "P2": 0, "P12": 0, "P23": 0},
+      "Lorry 3": {"status": "-", "present": false, "P1": 0, "P2": 0, "P12": 0, "P23": 0}
+    },
+    "machines_information": {
+      "Machine 2": {"state": 0, "OUT": 0, "totalPartsProduced": 120},
+      "Machine 2b": {"state": -1, "OUT": 0, "totalPartsProduced": 0},
+      "Machine 3": {"state": 1, "IN1": 0, "IN2": 0, "OUT": 0, "totalPartsProduced": 40},
+      "Machine 3b": {"state": -1, "IN1": 0, "IN2": 0, "OUT": 0, "totalPartsProduced": 0}
+    },
+    "container_information": {
+      "Container 2": {"part": "P1", "amount": 0, "throughput": 0},
+      "Container 3": {"part": "P2", "amount": 80, "throughput": 0.3},
+      "Container 4": {"part": "P12", "amount": 0, "throughput": 0}
+    },
+    "process_information": {"Creation": {}, "Movement": {}, "Combination": {}}
+  },
+  "3": {
+    "time": "2026-04-17 08:45:12",
+    "lorries_present": [],
+    "lorry_cargo": {
+      "Lorry 1": {"status": "-", "present": false, "P1": 0, "P2": 0, "P12": 0, "P23": 0},
+      "Lorry 2": {"status": "-", "present": false, "P1": 0, "P2": 0, "P12": 0, "P23": 0},
+      "Lorry 3": {"status": "-", "present": false, "P1": 0, "P2": 0, "P12": 0, "P23": 0}
+    },
+    "machines_information": {
+      "Machine 4": {"state": 3, "OUT": 0, "totalPartsProduced": 35},
+      "Machine 4b": {"state": -1, "OUT": 0, "totalPartsProduced": 0},
+      "Machine 5": {"state": -1, "IN1": 0, "IN2": 0, "OUT": 0, "totalPartsProduced": 0},
+      "Machine 5b": {"state": -2, "IN1": 0, "IN2": 0, "OUT": 0, "totalPartsProduced": 0},
+      "Machine 6": {"state": -1, "IN1": 0, "IN2": 0, "OUT": 0, "totalPartsProduced": 0},
+      "Machine 6b": {"state": -1, "IN1": 0, "IN2": 0, "OUT": 0, "totalPartsProduced": 0}
+    },
+    "container_information": {
+      "Container 5": {"part": "P12", "amount": 0, "throughput": 0},
+      "Container 6": {"part": "P3", "amount": 35, "throughput": 0.2},
+      "Container 7": {"part": "P2", "amount": 0, "throughput": 0},
+      "Container 8": {"part": "P23", "amount": 0, "throughput": 0},
+      "Container A": {"part": "P123", "amount": 0, "throughput": 0}
+    },
+    "process_information": {"Creation": {}, "Movement": {}, "Combination": {}}
+  },
+  "4": {
+    "time": "2026-04-17 08:45:12",
+    "lorries_present": [],
+    "lorry_cargo": {
+      "Lorry 1": {"status": "-", "present": false, "P1": 0, "P2": 0, "P12": 0, "P23": 0},
+      "Lorry 2": {"status": "-", "present": false, "P1": 0, "P2": 0, "P12": 0, "P23": 0},
+      "Lorry 3": {"status": "-", "present": false, "P1": 0, "P2": 0, "P12": 0, "P23": 0}
+    },
+    "machines_information": {
+      "Machine 7": {"state": -1, "OUT": 0, "totalPartsProduced": 0},
+      "Machine 7b": {"state": -1, "OUT": 0, "totalPartsProduced": 0},
+      "Machine 8": {"state": -1, "IN1": 0, "IN2": 0, "OUT": 0, "totalPartsProduced": 0},
+      "Machine 8b": {"state": -1, "IN1": 0, "IN2": 0, "OUT": 0, "totalPartsProduced": 0}
+    },
+    "container_information": {
+      "Container 9": {"part": "P23", "amount": 0, "throughput": 0},
+      "Container 10": {"part": "P4", "amount": 0, "throughput": 0},
+      "Container B": {"part": "P234", "amount": 0, "throughput": 0}
+    },
+    "process_information": {"Creation": {}, "Movement": {}, "Combination": {}}
+  }
+}
