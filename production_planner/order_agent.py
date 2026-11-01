@@ -160,7 +160,6 @@ def parse_order(
                 system_instruction=_SYSTEM_PROMPT.format(parts=", ".join(_VALID_PARTS)),
                 response_mime_type="application/json",
                 response_schema=OrderIntent,
-                temperature=0.0,
             ),
         )
     except Exception as exc:

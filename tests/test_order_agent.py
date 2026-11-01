@@ -97,7 +97,6 @@ def test_parse_order_sends_local_time_and_requests_structured_output():
         "operator_request": "make 200 p12",
     }
     assert request["config"].response_schema is OrderIntent
-    assert request["config"].temperature == 0.0
 
 
 def test_parse_order_falls_back_to_the_response_text():
