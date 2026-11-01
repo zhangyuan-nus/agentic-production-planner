@@ -1,8 +1,6 @@
-from pathlib import Path
+from dotenv import find_dotenv, load_dotenv
 
-from dotenv import load_dotenv
-
-load_dotenv(Path(__file__).with_name(".env"))
+load_dotenv(find_dotenv(usecwd=True))
 
 MODEL = "gemini-2.5-flash"
 

@@ -8,8 +8,8 @@ as the rest of workflow 3) to translate it into a strict, validated
 
 Standalone usage (for testing):
 
-    python -m Factory_Agent.order_agent "produce 300 p123 by 2026-05-01, reuse stock"
-    python -m Factory_Agent.order_agent --interactive
+    python -m production_planner.order_agent "produce 300 p123 by 2026-05-01, reuse stock"
+    python -m production_planner.order_agent --interactive
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from google.genai import types
 from pydantic import BaseModel, Field, field_validator
 
 from .config import MODEL, PART_TO_MACHINE
-from .models.production_goal import ProductionGoal
+from .models import ProductionGoal
 
 
 _VALID_PARTS = sorted(PART_TO_MACHINE.keys())

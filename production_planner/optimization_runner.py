@@ -2,12 +2,12 @@
 Standalone optimisation runner.
 
 Usage (structured flags):
-    python -m Factory_Agent.optimization_runner --part p123 --qty 500
-    python -m Factory_Agent.optimization_runner --part p12 --qty 200 --deadline "2026-04-01T18:00:00"
-    python -m Factory_Agent.optimization_runner --part p234 --qty 500 --use-existing-stock
+    python -m production_planner.optimization_runner --part p123 --qty 500
+    python -m production_planner.optimization_runner --part p12 --qty 200 --deadline "2026-04-01T18:00:00"
+    python -m production_planner.optimization_runner --part p234 --qty 500 --use-existing-stock
 
 Usage (natural-language order, goes through the Order Agent LLM):
-    python -m Factory_Agent.optimization_runner --order "make 500 p12 by tomorrow 8am, use existing stock"
+    python -m production_planner.optimization_runner --order "make 500 p12 by tomorrow 8am, use existing stock"
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ import paho.mqtt.client as mqtt
 from google import genai
 
 from .config import MODEL, MQTT_BROKER, PART_TO_MACHINE
-from .models.production_goal import OptimizationPlan, ProductionGoal
+from .models import OptimizationPlan, ProductionGoal
 from .optimizer import compute_plan
 from .order_agent import intent_to_goal, parse_order, print_intent
 from .snapshot import extract_stocks, get_all_factory_snapshots

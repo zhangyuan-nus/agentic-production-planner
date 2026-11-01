@@ -19,7 +19,7 @@ You will need:
 
 - **Python 3.10+**
 - **An MQTT broker** running on `localhost:1883`. The host can be
-  changed in `Factory_Agent/config.py` (`MQTT_BROKER`). Quick install:
+  changed in `production_planner/config.py` (`MQTT_BROKER`). Quick install:
   - **Windows:** download the installer from
     <https://mosquitto.org/download/>, install it, then start the
     service from `services.msc` (or `net start mosquitto` from an
@@ -42,7 +42,7 @@ You will need:
     `optimization_plan` (enable machines) and `optimization_plan_stop`
     (disable machines) payloads.
 
-  See `Factory_Agent/snapshot.py` and `Factory_Agent/optimization_runner.py`
+  See `production_planner/snapshot.py` and `production_planner/optimization_runner.py`
   for the exact field shapes.
 
 - **A Google Cloud project with Vertex AI enabled**, plus a
@@ -55,14 +55,14 @@ You will need:
 
 ## 2. Install
 
-From the project root (`Google_ADK/`):
+From the repository root:
 
 **Windows (PowerShell):**
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+pip install -e .
 ```
 
 **macOS / Linux:**
@@ -70,23 +70,23 @@ pip install -r requirements.txt
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -e .
 ```
 
 ---
 
 ## 3. Configure
 
-1. Copy `Factory_Agent/.env.example` to `Factory_Agent/.env`.
+1. Copy `.env.example` to `.env` in the repository root.
 2. Place your GCP service-account key somewhere on disk (e.g.
-   `Factory_Agent/gcp-key.json`).
-3. Edit `Factory_Agent/.env` and fill in:
+   `gcp-key.json` in the repository root; it is git-ignored).
+3. Edit `.env` and fill in:
    - `GOOGLE_CLOUD_PROJECT` — your GCP project ID.
    - `GOOGLE_APPLICATION_CREDENTIALS` — absolute path to your key file.
      On Windows use forward slashes or double backslashes, e.g.
 
      ```text
-     C:/Users/you/projects/Google_ADK/Factory_Agent/gcp-key.json
+     C:/Users/you/projects/agentic-production-planner/gcp-key.json
      ```
 
    - `TELEGRAM_*` values, only if you're using the Telegram features.
@@ -99,7 +99,7 @@ The order-agent step only requires working Vertex AI credentials, so
 use it to confirm setup:
 
 ```bash
-python -m Factory_Agent.order_agent "produce 300 p123"
+python -m production_planner.order_agent "produce 300 p123"
 ```
 
 If you see a parsed-order table printed, your Python deps and GCP auth
@@ -117,15 +117,15 @@ then from the project root:
 **Natural-language order (uses Gemini to parse the request):**
 
 ```bash
-python -m Factory_Agent.optimization_runner --order "make 500 p12 by tomorrow 8am, use existing stock"
+python -m production_planner.optimization_runner --order "make 500 p12 by tomorrow 8am, use existing stock"
 ```
 
 **Structured form (no LLM parsing of the request):**
 
 ```bash
-python -m Factory_Agent.optimization_runner --part p123 --qty 500
-python -m Factory_Agent.optimization_runner --part p12 --qty 200 --deadline "2027-01-15T18:00:00"
-python -m Factory_Agent.optimization_runner --part p234 --qty 500 --use-existing-stock
+python -m production_planner.optimization_runner --part p123 --qty 500
+python -m production_planner.optimization_runner --part p12 --qty 200 --deadline "2027-01-15T18:00:00"
+python -m production_planner.optimization_runner --part p234 --qty 500 --use-existing-stock
 ```
 
 **Useful flags:**
@@ -159,31 +159,31 @@ python -m Factory_Agent.optimization_runner --part p234 --qty 500 --use-existing
 ## 7. Project layout
 
 ```text
-Google_ADK/
+agentic-production-planner/
   README.md
-  requirements.txt
-  Factory_Agent/
-    .env.example            ← copy to .env and fill in
+  pyproject.toml
+  .env.example              ← copy to .env and fill in
+  production_planner/
     config.py               ← MQTT broker, model name, parts/machines map
     order_agent.py          ← natural-language → ProductionGoal (Gemini)
     optimizer.py            ← core planning algorithm
     optimization_runner.py  ← CLI entry point (the one you'll run)
     snapshot.py             ← MQTT snapshot collector
-    models/                 ← Pydantic schemas
+    models.py               ← Pydantic schemas
 ```
 
 ---
 
 ## 8. Common issues
 
-- **`ModuleNotFoundError: No module named 'Factory_Agent'`** — you ran
-  the script from inside `Factory_Agent/` instead of the project root.
-  Run from `Google_ADK/` and use
-  `python -m Factory_Agent.optimization_runner ...`.
+- **`ModuleNotFoundError: No module named 'production_planner'`** — you ran
+  the script from inside `production_planner/` instead of the repository root.
+  Run from the repository root and use
+  `python -m production_planner.optimization_runner ...`.
 - **`google.auth.exceptions.DefaultCredentialsError`** —
   `GOOGLE_APPLICATION_CREDENTIALS` is wrong, or Vertex AI isn't enabled
   on the project.
 - **`No snapshots received`** — your MQTT broker isn't running, or the
   simulator isn't publishing on `Factory/+/Information`.
 - **Connection refused on MQTT** — change `MQTT_BROKER` in
-  `Factory_Agent/config.py` if your broker is on another host.
+  `production_planner/config.py` if your broker is on another host.

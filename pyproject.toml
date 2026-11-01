@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentic-production-planner"
+version = "1.0.0"
+description = "Turns natural-language production orders into machine-level plans for a four-factory MQTT testbed."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Zhang Yuan" }]
+dependencies = [
+    "google-genai>=1.0",
+    "paho-mqtt>=2.0",
+    "pydantic>=2.0",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.5"]
+
+[project.scripts]
+production-planner = "production_planner.optimization_runner:main"
+
+[tool.setuptools.packages.find]
+include = ["production_planner*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]

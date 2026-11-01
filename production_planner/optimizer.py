@@ -41,7 +41,7 @@ from .config import (
     STARTUP_SECONDS,
     STATE_PROD_RATE,
 )
-from .models.production_goal import (
+from .models import (
     MachineRecommendation,
     OptimizationPlan,
     ProductionGoal,
