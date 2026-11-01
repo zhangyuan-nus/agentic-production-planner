@@ -109,10 +109,12 @@ def monitor_until_complete(
     client.loop_start()
 
     start = time.monotonic()
-    last_printed = -1
+    last_step = -1
+    last_print = start
     try:
         while True:
-            elapsed = time.monotonic() - start
+            now = time.monotonic()
+            elapsed = now - start
             if elapsed > max_wait_seconds:
                 print(f"\n[planner] Monitor timed out after {max_wait_seconds:.0f}s. "
                       "Machines left running; publish an 'optimization_plan_stop' "
@@ -122,12 +124,13 @@ def monitor_until_complete(
             current_total = extract_stocks(latest).get(target, 0) if latest else 0
             produced = max(0, current_total - baseline_target_stock)
 
-            # Print progress only when it changes, to keep the log readable.
-            if produced != last_printed:
-                pct = min(100.0, produced / units_to_produce * 100) if units_to_produce else 100.0
+            # Report every 10% of progress, and at least every 30 s so a stall is visible.
+            pct = min(100.0, produced / units_to_produce * 100) if units_to_produce else 100.0
+            step = int(pct // 10)
+            if step != last_step or now - last_print >= 30:
                 print(f"  [{elapsed:6.1f}s]  {target} stock = {current_total:>6}  "
                       f"produced = {produced:>6}/{units_to_produce}  ({pct:5.1f}%)")
-                last_printed = produced
+                last_step, last_print = step, now
 
             if current_total >= threshold:
                 print(f"\n[planner] Order complete: produced {produced} unit(s) of {target}.")
