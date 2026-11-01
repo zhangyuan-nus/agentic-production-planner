@@ -1,10 +1,19 @@
+"""Runtime settings and the plant model shared by the planner modules."""
+
+import os
+
 from dotenv import find_dotenv, load_dotenv
 
 load_dotenv(find_dotenv(usecwd=True))
 
-MODEL = "gemini-2.5-flash"
+MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
-MQTT_BROKER = "127.0.0.1"
+MQTT_BROKER = os.getenv("MQTT_BROKER", "127.0.0.1")
+MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
+
+# Topics defined by the factory testbed.
+FACTORY_INFO_TOPIC = "Factory/+/Information"
+INSTRUCTIONS_TOPIC = "optimizer/instructions"
 
 # Part -> primary machine number.
 # Simulator layout:

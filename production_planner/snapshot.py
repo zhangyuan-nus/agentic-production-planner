@@ -1,8 +1,7 @@
-"""MQTT snapshot helper for workflow 3.
+"""Factory snapshots: collect them from MQTT (or a saved file) and aggregate stock.
 
-Subscribes to Factory/+/Information and returns the latest JSON payload per
-factory, keyed by factory id (e.g. "1", "2", ...). Also provides
-``extract_stocks`` to aggregate container levels from those snapshots.
+Every factory in the testbed publishes a JSON snapshot on ``Factory/<id>/Information``
+each simulated second. The planner only needs the latest message per factory.
 """
 
 from __future__ import annotations
@@ -10,43 +9,59 @@ from __future__ import annotations
 import json
 import re
 import time
-from typing import Dict
+from pathlib import Path
 
-import paho.mqtt.client as mqtt
+from .config import FACTORY_INFO_TOPIC, FACTORY_MACHINES
+from .mqtt_io import connect
 
-from .config import MQTT_BROKER
+
+def factory_id_from_topic(topic: str) -> str | None:
+    """Return ``"3"`` for ``Factory/3/Information``, or None for any other topic."""
+    parts = str(topic).split("/")
+    if len(parts) == 3 and parts[0] == "Factory" and parts[2] == "Information":
+        return parts[1]
+    return None
 
 
-def get_all_factory_snapshots(timeout: int = 10) -> dict:
-    """Subscribe to Factory/+/Information and collect the latest message per factory."""
-    results: dict = {}
+def get_all_factory_snapshots(timeout: float = 10) -> dict[str, dict]:
+    """Subscribe to every factory's information topic and collect the latest message per factory.
+
+    Returns as soon as all factories have reported, or after ``timeout`` seconds.
+    """
+    results: dict[str, dict] = {}
 
     def on_message(_client, _userdata, msg):
-        parts = str(msg.topic).split("/")
-        if len(parts) == 3 and parts[0] == "Factory" and parts[2] == "Information":
-            fid = parts[1]
-            try:
-                results[fid] = json.loads(msg.payload.decode())
-            except Exception:
-                results[fid] = {
-                    "error": "bad_json",
-                    "raw": msg.payload.decode(errors="replace"),
-                }
+        fid = factory_id_from_topic(msg.topic)
+        if fid is None:
+            return
+        try:
+            results[fid] = json.loads(msg.payload.decode())
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            results[fid] = {
+                "error": "bad_json",
+                "raw": msg.payload.decode(errors="replace"),
+            }
 
-    c = mqtt.Client()
-    c.on_message = on_message
-    c.connect(MQTT_BROKER)
-    c.subscribe("Factory/+/Information", qos=1)
-    c.loop_start()
-
+    client = connect()
+    client.on_message = on_message
+    client.subscribe(FACTORY_INFO_TOPIC, qos=1)
+    client.loop_start()
     try:
-        start = time.time()
-        while len(results) < 4 and (time.time() - start) < timeout:
+        deadline = time.monotonic() + timeout
+        while len(results) < len(FACTORY_MACHINES) and time.monotonic() < deadline:
             time.sleep(0.05)
-        return results
+        return dict(results)
     finally:
-        c.loop_stop()
-        c.disconnect()
+        client.disconnect()
+        client.loop_stop()
+
+
+def load_snapshots(path: str | Path) -> dict[str, dict]:
+    """Load snapshots saved as ``{"<factory id>": <Information payload>, ...}``."""
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"{path}: expected a JSON object keyed by factory id")
+    return {str(fid): snap for fid, snap in data.items()}
 
 
 _CONTAINER_KEYS = (
@@ -87,7 +102,7 @@ def _normalise_part(value) -> str:
     return s
 
 
-def extract_stocks(snapshots: dict) -> Dict[str, int]:
+def extract_stocks(snapshots: dict) -> dict[str, int]:
     """Aggregate per-part inventory across all factories in the snapshot set.
 
     Sums:
@@ -96,9 +111,9 @@ def extract_stocks(snapshots: dict) -> Dict[str, int]:
 
     Returns ``{}`` if no inventory information is found in any snapshot.
     """
-    totals: Dict[str, int] = {}
+    totals: dict[str, int] = {}
 
-    for _fid, snap in snapshots.items():
+    for snap in snapshots.values():
         if not isinstance(snap, dict):
             continue
 
@@ -108,7 +123,7 @@ def extract_stocks(snapshots: dict) -> Dict[str, int]:
     return totals
 
 
-def _aggregate_containers(snap: dict, totals: Dict[str, int]) -> None:
+def _aggregate_containers(snap: dict, totals: dict[str, int]) -> None:
     containers = None
     for key in _CONTAINER_KEYS:
         if isinstance(snap.get(key), dict):
@@ -145,11 +160,11 @@ def _aggregate_containers(snap: dict, totals: Dict[str, int]) -> None:
         totals[part] = totals.get(part, 0) + level
 
 
-def _aggregate_lorry_cargo(snap: dict, totals: Dict[str, int]) -> None:
+def _aggregate_lorry_cargo(snap: dict, totals: dict[str, int]) -> None:
     cargo = snap.get("lorry_cargo")
     if not isinstance(cargo, dict):
         return
-    for _lorry_name, info in cargo.items():
+    for info in cargo.values():
         if not isinstance(info, dict):
             continue
         for raw_part in _LORRY_CARGO_PARTS:

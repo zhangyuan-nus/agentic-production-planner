@@ -13,12 +13,13 @@ The model is a simplified view of the simulator:
   state 0 -> 10/s, 1 -> 9, 2 -> 8, 3 -> 5, 4-9 -> 0).
 - A machine we recommend to enable is assumed to start at state 0, so it
   contributes ``NEW_ENABLE_RATE`` (= 10/s) until it degrades.
+- Machines an operator has forced down (state -2) are never re-enabled.
 - Dependencies are expanded via PART_DEPENDENCIES.
 - If ``use_existing_stock`` is set on the goal, container levels and lorry
   cargo are read from the snapshot and subtracted top-down from per-stage
   demand.
 - Enabling a disabled machine incurs STARTUP_SECONDS ramp-up (reported as a
-  warning, not subtracted from capacity).
+  warning and included in the deadline check, not subtracted from capacity).
 - Cross-factory transport latency for lorry-eligible parts is flagged as a
   warning rather than modeled numerically.
 - Internal transport caps (`m_c_move`/`c_m_move` at 1 unit/timestep) may
@@ -29,7 +30,6 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Set
 
 from .config import (
     ALLOWED_MACHINE_IDS,
@@ -49,17 +49,23 @@ from .models import (
 )
 from .snapshot import extract_stocks
 
+DISABLED_STATE = "-1"
+FORCED_DOWN_STATE = "-2"
 
-def _transitive_dependencies(target: str) -> List[str]:
+
+def _transitive_dependencies(
+    target: str,
+    dependencies: dict[str, list[str]] = PART_DEPENDENCIES,
+) -> list[str]:
     """Return *target* plus every upstream part in dependency order (leaves first)."""
-    visited: Set[str] = set()
-    order: List[str] = []
+    visited: set[str] = set()
+    order: list[str] = []
 
     def _dfs(part: str) -> None:
         if part in visited:
             return
         visited.add(part)
-        for dep in PART_DEPENDENCIES.get(part, []):
+        for dep in dependencies.get(part, []):
             _dfs(dep)
         order.append(part)
 
@@ -67,7 +73,7 @@ def _transitive_dependencies(target: str) -> List[str]:
     return order
 
 
-def _snapshot_machine_key(machine_id: str) -> List[str]:
+def _snapshot_machine_key(machine_id: str) -> list[str]:
     """Return possible snapshot key names for a machine ID like 'F1M1' or 'F1M1b'."""
     m = re.fullmatch(r"F(\d+)M(\d+)(b?)", machine_id)
     if not m:
@@ -85,20 +91,20 @@ def _machine_state(snapshots: dict, factory_id: str, machine_id: str) -> str:
     """Read machine state from snapshot; returns '-1' when unknown/missing."""
     snap = snapshots.get(factory_id)
     if not isinstance(snap, dict):
-        return "-1"
+        return DISABLED_STATE
     machines = snap.get("machines_information", {})
     if not isinstance(machines, dict):
-        return "-1"
+        return DISABLED_STATE
     for key in _snapshot_machine_key(machine_id):
         info = machines.get(key)
         if isinstance(info, dict) and "state" in info:
             return str(info["state"]).strip()
-    return "-1"
+    return DISABLED_STATE
 
 
 def _is_active(state: str) -> bool:
     """True if the machine is enabled (not disabled and not forced down)."""
-    return state not in ("-1", "-2")
+    return state not in (DISABLED_STATE, FORCED_DOWN_STATE)
 
 
 def _rate_for_state(state: str) -> float:
@@ -126,13 +132,16 @@ def _stage_time_seconds(required: int, capacity: float) -> float:
 def _compute_net_demand(
     target: str,
     quantity: int,
-    stocks: Dict[str, int],
-) -> tuple[Dict[str, int], Dict[str, int]]:
+    stocks: dict[str, int],
+    dependencies: dict[str, list[str]] = PART_DEPENDENCIES,
+) -> tuple[dict[str, int], dict[str, int]]:
     """Propagate demand top-down through the dependency graph.
 
     For a 1:1 BOM, each unit of a parent part consumes one unit of each of its
     direct dependencies. Stock at any level reduces how much of that part must
-    be produced, which in turn reduces demand on its upstream parts.
+    be produced, which in turn reduces demand on its upstream parts. Stock is
+    drawn down as it is allocated, so a component that feeds two branches of
+    the BOM is never counted twice.
 
     Returns ``(net_demand, stock_used)``:
       * ``net_demand[part]``  = units that must still be produced at that stage.
@@ -140,35 +149,40 @@ def _compute_net_demand(
         cover the order (at most ``quantity`` at the target, at most ``gross``
         at intermediates).
     """
-    net_demand: Dict[str, int] = {}
-    stock_used: Dict[str, int] = {}
+    remaining = {part: max(0, int(qty)) for part, qty in stocks.items()}
+    net_demand: dict[str, int] = {}
+    stock_used: dict[str, int] = {}
 
     def _expand(part: str, gross_required: int) -> None:
         if gross_required <= 0:
             net_demand.setdefault(part, 0)
             return
-        have = int(stocks.get(part, 0))
-        used = min(have, gross_required)
+        used = min(remaining.get(part, 0), gross_required)
         if used > 0:
+            remaining[part] -= used
             stock_used[part] = stock_used.get(part, 0) + used
         net = gross_required - used
         net_demand[part] = net_demand.get(part, 0) + net
         if net <= 0:
             return
-        for dep in PART_DEPENDENCIES.get(part, []):
+        for dep in dependencies.get(part, []):
             _expand(dep, net)
 
     _expand(target, quantity)
 
     # Make sure every part in the chain has an entry (even if zero).
-    for p in _transitive_dependencies(target):
+    for p in _transitive_dependencies(target, dependencies):
         net_demand.setdefault(p, 0)
 
     return net_demand, stock_used
 
 
-def compute_plan(goal: ProductionGoal, snapshots: dict) -> OptimizationPlan:
-    warnings: List[str] = []
+def compute_plan(
+    goal: ProductionGoal,
+    snapshots: dict,
+    now: datetime | None = None,
+) -> OptimizationPlan:
+    warnings: list[str] = []
 
     if goal.target_part not in PART_TO_MACHINE:
         return OptimizationPlan(
@@ -176,15 +190,16 @@ def compute_plan(goal: ProductionGoal, snapshots: dict) -> OptimizationPlan:
             feasible=False,
             stages=[],
             recommendations=[],
-            warnings=[f"Unknown part '{goal.target_part}'. Valid: {sorted(PART_TO_MACHINE.keys())}"],
+            warnings=[f"Unknown part '{goal.target_part}'. Valid: {sorted(PART_TO_MACHINE)}"],
         )
 
     required_parts = _transitive_dependencies(goal.target_part)
-    stages: List[StageAnalysis] = []
-    recommendations: List[MachineRecommendation] = []
+    stages: list[StageAnalysis] = []
+    recommendations: list[MachineRecommendation] = []
+    forced_down: list[str] = []
 
     # --- stock lookup (only when requested) ---
-    stocks: Dict[str, int] = {}
+    stocks: dict[str, int] = {}
     if goal.use_existing_stock:
         stocks = extract_stocks(snapshots)
         if not stocks:
@@ -221,25 +236,20 @@ def compute_plan(goal: ProductionGoal, snapshots: dict) -> OptimizationPlan:
             ))
             continue
 
-        primary_id = f"F{factory_id}M{machine_num}"
-        backup_id = f"F{factory_id}M{machine_num}b"
-        primary_state = _machine_state(snapshots, factory_id, primary_id)
-        backup_state = _machine_state(snapshots, factory_id, backup_id)
-
-        active: List[str] = []
-        idle: List[str] = []
+        active: list[str] = []
+        idle: list[str] = []
         capacity = 0.0
 
-        if _is_active(primary_state):
-            active.append(primary_id)
-            capacity += _rate_for_state(primary_state)
-        else:
-            idle.append(primary_id)
-        if _is_active(backup_state):
-            active.append(backup_id)
-            capacity += _rate_for_state(backup_state)
-        else:
-            idle.append(backup_id)
+        for machine_id in (f"F{factory_id}M{machine_num}", f"F{factory_id}M{machine_num}b"):
+            state = _machine_state(snapshots, factory_id, machine_id)
+            if state == FORCED_DOWN_STATE:
+                # An operator took this machine offline; never override that.
+                forced_down.append(machine_id)
+            elif _is_active(state):
+                active.append(machine_id)
+                capacity += _rate_for_state(state)
+            else:
+                idle.append(machine_id)
 
         stages.append(StageAnalysis(
             part=part,
@@ -252,6 +262,12 @@ def compute_plan(goal: ProductionGoal, snapshots: dict) -> OptimizationPlan:
             required_units=required,
             estimated_stage_seconds=_stage_time_seconds(required, capacity),
         ))
+
+    if forced_down:
+        warnings.append(
+            f"Machine(s) {', '.join(forced_down)} are forced down (state -2) and were "
+            "left out of the plan."
+        )
 
     # --- greedy: enable idle machines at the slowest (longest time) stage first ---
     # Stages with 0 demand (stock already covers it) are skipped.
@@ -372,9 +388,13 @@ def compute_plan(goal: ProductionGoal, snapshots: dict) -> OptimizationPlan:
         )
 
     if not active_stages:
-        warnings.append("Existing stock already covers the requested quantity at every stage. No production needed.")
+        warnings.append(
+            "Existing stock already covers the requested quantity at every stage. "
+            "No production needed."
+        )
 
     # --- startup-time awareness ---
+    startup_seconds = STARTUP_SECONDS if recommendations else 0
     if recommendations:
         warnings.append(
             f"{len(recommendations)} machine(s) will be newly enabled; each incurs "
@@ -407,16 +427,18 @@ def compute_plan(goal: ProductionGoal, snapshots: dict) -> OptimizationPlan:
         )
 
     # --- deadline feasibility (seconds) ---
-    deadline_met: Optional[bool] = None
+    deadline_met: bool | None = None
     if goal.deadline is not None:
-        now = datetime.now(timezone.utc)
+        now = now or datetime.now(timezone.utc)
         available_seconds = (goal.deadline - now).total_seconds()
-        deadline_met = estimated_seconds <= available_seconds
+        needed_seconds = estimated_seconds + startup_seconds
+        deadline_met = needed_seconds <= available_seconds
         if not deadline_met:
-            shortfall = estimated_seconds - available_seconds
+            shortfall = needed_seconds - available_seconds
             warnings.append(
-                f"Deadline cannot be met. Need ~{estimated_seconds:.1f}s but only "
-                f"{available_seconds:.1f}s available (short by {shortfall:.1f}s). "
+                f"Deadline cannot be met. Need ~{needed_seconds:.1f}s (including "
+                f"{startup_seconds}s startup) but only {available_seconds:.1f}s "
+                f"available (short by {shortfall:.1f}s). "
                 "Consider increasing machine rates or reducing quantity."
             )
 

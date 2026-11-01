@@ -18,18 +18,15 @@ import sys
 import time
 from datetime import datetime, timezone
 
-import paho.mqtt.client as mqtt
 from google import genai
+from pydantic import ValidationError
 
-from .config import MODEL, MQTT_BROKER, PART_TO_MACHINE
+from .config import FACTORY_INFO_TOPIC, INSTRUCTIONS_TOPIC, MODEL, PART_TO_MACHINE
 from .models import OptimizationPlan, ProductionGoal
+from .mqtt_io import connect, publish_json
 from .optimizer import compute_plan
-from .order_agent import intent_to_goal, parse_order, print_intent
-from .snapshot import extract_stocks, get_all_factory_snapshots
-
-
-INSTRUCTIONS_TOPIC = "optimizer/instructions"
-STOP_INSTRUCTIONS_TOPIC = "optimizer/instructions"  # same topic, different payload.type
+from .order_agent import intent_to_goal, parse_deadline, parse_order, print_intent
+from .snapshot import extract_stocks, factory_id_from_topic, get_all_factory_snapshots
 
 LLM_SUMMARY_PROMPT = """\
 You are a factory production planning assistant.
@@ -113,16 +110,8 @@ def _build_instructions(plan: OptimizationPlan) -> dict:
 
 def _publish_instructions(instructions: dict) -> None:
     """Publish the confirmed plan to MQTT."""
-    payload = json.dumps(instructions, indent=2)
-    c = mqtt.Client()
-    c.connect(MQTT_BROKER)
-    c.loop_start()
-    try:
-        c.publish(INSTRUCTIONS_TOPIC, payload, qos=1, retain=False)
-        print(f"[optimizer] Published instructions to '{INSTRUCTIONS_TOPIC}'")
-    finally:
-        c.loop_stop()
-        c.disconnect()
+    publish_json(INSTRUCTIONS_TOPIC, instructions)
+    print(f"[optimizer] Published instructions to '{INSTRUCTIONS_TOPIC}'")
 
 
 def _build_stop_instructions(plan: OptimizationPlan, produced: int) -> dict:
@@ -173,17 +162,17 @@ def _monitor_until_complete(
     latest: dict = {}
 
     def on_message(_client, _userdata, msg):
-        parts = str(msg.topic).split("/")
-        if len(parts) == 3 and parts[0] == "Factory" and parts[2] == "Information":
-            try:
-                latest[parts[1]] = json.loads(msg.payload.decode())
-            except Exception:
-                pass
+        fid = factory_id_from_topic(msg.topic)
+        if fid is None:
+            return
+        try:
+            latest[fid] = json.loads(msg.payload.decode())
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            pass
 
-    c = mqtt.Client()
+    c = connect()
     c.on_message = on_message
-    c.connect(MQTT_BROKER)
-    c.subscribe("Factory/+/Information", qos=1)
+    c.subscribe(FACTORY_INFO_TOPIC, qos=1)
     c.loop_start()
 
     start = time.time()
@@ -193,8 +182,8 @@ def _monitor_until_complete(
             elapsed = time.time() - start
             if elapsed > max_wait_seconds:
                 print(f"\n[optimizer] Monitor timeout after {max_wait_seconds:.0f}s. "
-                      "Machines left running. Re-run with --no-confirm to issue stop "
-                      "manually.")
+                      "Machines left running; publish an 'optimization_plan_stop' "
+                      f"payload to '{INSTRUCTIONS_TOPIC}' to switch them off.")
                 return
 
             current_total = extract_stocks(latest).get(target, 0) if latest else 0
@@ -210,17 +199,16 @@ def _monitor_until_complete(
             if current_total >= threshold:
                 print(f"\n[optimizer] Order complete — produced {produced} unit(s) of {target}.")
                 stop_payload = _build_stop_instructions(plan, produced)
-                c.publish(
-                    STOP_INSTRUCTIONS_TOPIC,
+                info = c.publish(
+                    INSTRUCTIONS_TOPIC,
                     json.dumps(stop_payload, indent=2),
                     qos=1,
                     retain=False,
                 )
+                info.wait_for_publish(timeout=5)
                 print(f"[optimizer] Published stop instructions to "
-                      f"'{STOP_INSTRUCTIONS_TOPIC}' "
+                      f"'{INSTRUCTIONS_TOPIC}' "
                       f"(disabling {len(plan.recommendations)} machine(s)).")
-                # Give the message a moment to flush before disconnecting.
-                time.sleep(0.5)
                 return
 
             time.sleep(poll_interval)
@@ -228,8 +216,8 @@ def _monitor_until_complete(
         print("\n[optimizer] Monitor interrupted by user. Machines left in their "
               "current state.")
     finally:
-        c.loop_stop()
         c.disconnect()
+        c.loop_stop()
 
 
 def _print_stock_section(plan: OptimizationPlan) -> None:
@@ -355,18 +343,15 @@ def main() -> None:
         if not args.part or args.qty is None:
             parser.error("either --order, or both --part and --qty must be given")
 
-        deadline = None
-        if args.deadline:
-            deadline = datetime.fromisoformat(args.deadline)
-            if deadline.tzinfo is None:
-                deadline = deadline.replace(tzinfo=timezone.utc)
-
-        goal = ProductionGoal(
-            target_part=args.part,
-            quantity=args.qty,
-            deadline=deadline,
-            use_existing_stock=args.use_existing_stock,
-        )
+        try:
+            goal = ProductionGoal(
+                target_part=args.part,
+                quantity=args.qty,
+                deadline=parse_deadline(args.deadline) if args.deadline else None,
+                use_existing_stock=args.use_existing_stock,
+            )
+        except (ValueError, ValidationError) as exc:
+            parser.error(str(exc))
 
     print(f"[optimizer] Fetching live factory snapshots (timeout={args.mqtt_timeout}s) ...")
     snapshots = get_all_factory_snapshots(timeout=args.mqtt_timeout)

@@ -2,9 +2,10 @@
 Order Agent.
 
 Takes a free-text production request from an operator (e.g. "make 500 p12 by
-tomorrow 8am using existing stock") and uses Gemini (via the same credentials
-as the rest of workflow 3) to translate it into a strict, validated
-``ProductionGoal`` that the optimiser can consume.
+tomorrow 8am using existing stock") and uses Gemini structured output to
+translate it into a strict, validated ``ProductionGoal`` that the optimiser
+can consume. The LLM only captures intent: it never sees stock levels or does
+any arithmetic.
 
 Standalone usage (for testing):
 
@@ -17,8 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import datetime
 
 from google import genai
 from google.genai import types
@@ -26,7 +26,6 @@ from pydantic import BaseModel, Field, field_validator
 
 from .config import MODEL, PART_TO_MACHINE
 from .models import ProductionGoal
-
 
 _VALID_PARTS = sorted(PART_TO_MACHINE.keys())
 
@@ -41,12 +40,12 @@ class OrderIntent(BaseModel):
     quantity: int = Field(
         description="Number of units of target_part to produce. Must be >= 1.",
     )
-    deadline: Optional[str] = Field(
+    deadline: str | None = Field(
         default=None,
         description=(
-            "Optional ISO-8601 deadline (e.g. '2026-05-01T08:00:00+00:00'). "
-            "Convert relative phrases like 'tomorrow morning' to an absolute "
-            "UTC ISO-8601 timestamp using the 'current_time_utc' provided. "
+            "Optional ISO-8601 deadline including the UTC offset "
+            "(e.g. '2026-05-01T08:00:00+08:00'). Resolve relative phrases like "
+            "'tomorrow morning' against the 'current_local_time' provided. "
             "Leave null if no deadline was given."
         ),
     )
@@ -64,7 +63,7 @@ class OrderIntent(BaseModel):
             "operator's intent (0.0 = guessing, 1.0 = certain)."
         ),
     )
-    notes: Optional[str] = Field(
+    notes: str | None = Field(
         default=None,
         description=(
             "Short free-text clarification or warning (e.g. 'assumed p12 "
@@ -94,11 +93,7 @@ class OrderIntent(BaseModel):
     @field_validator("confidence")
     @classmethod
     def _clamp_confidence(cls, v: float) -> float:
-        if v < 0.0:
-            return 0.0
-        if v > 1.0:
-            return 1.0
-        return v
+        return min(max(v, 0.0), 1.0)
 
 
 _SYSTEM_PROMPT = """\
@@ -111,10 +106,11 @@ Rules:
 - `target_part` must be one of the valid parts above, lowercase, no spaces
   ('p12' not 'P 12' or 'part12').
 - `quantity` must be a positive integer (the number of units of `target_part`).
-- If the user gives a relative deadline like "by tomorrow 8am", "in 2 hours",
-  "next Monday", convert it to an absolute ISO-8601 timestamp in UTC using
-  `current_time_utc` as "now". If the user gives no deadline, set `deadline`
-  to null. Do NOT invent deadlines.
+- Times are in the operator's time zone. `current_local_time` is "now" as an
+  ISO-8601 timestamp with UTC offset. Convert relative deadlines like
+  "by tomorrow 8am", "in 2 hours" or "next Monday" to an absolute ISO-8601
+  timestamp that includes the same UTC offset. If the user gives no deadline,
+  set `deadline` to null. Do NOT invent deadlines.
 - Set `use_existing_stock` to true ONLY if the operator explicitly asks to
   use/reuse/count existing stock, inventory, or parts already on hand.
   Otherwise false.
@@ -131,20 +127,21 @@ Output: exactly one JSON object matching the schema. No prose, no markdown.
 """
 
 
-def _build_prompt(order_text: str) -> list[str]:
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    system = _SYSTEM_PROMPT.format(parts=", ".join(_VALID_PARTS))
-    user = json.dumps(
+def _build_request(order_text: str, now: datetime) -> str:
+    return json.dumps(
         {
-            "current_time_utc": now,
+            "current_local_time": now.isoformat(timespec="seconds"),
             "operator_request": order_text,
         },
         indent=2,
     )
-    return [system, user]
 
 
-def parse_order(order_text: str) -> OrderIntent:
+def parse_order(
+    order_text: str,
+    client: genai.Client | None = None,
+    now: datetime | None = None,
+) -> OrderIntent:
     """Call Gemini and return a validated ``OrderIntent``.
 
     Raises ``RuntimeError`` if the LLM call fails or returns something
@@ -153,12 +150,14 @@ def parse_order(order_text: str) -> OrderIntent:
     if not order_text or not order_text.strip():
         raise ValueError("order_text is empty")
 
-    client = genai.Client()
+    now = now or datetime.now().astimezone()
     try:
+        client = client or genai.Client()
         response = client.models.generate_content(
             model=MODEL,
-            contents=_build_prompt(order_text),
+            contents=_build_request(order_text, now),
             config=types.GenerateContentConfig(
+                system_instruction=_SYSTEM_PROMPT.format(parts=", ".join(_VALID_PARTS)),
                 response_mime_type="application/json",
                 response_schema=OrderIntent,
                 temperature=0.0,
@@ -183,17 +182,27 @@ def parse_order(order_text: str) -> OrderIntent:
     return OrderIntent.model_validate(data)
 
 
-def intent_to_goal(intent: OrderIntent) -> ProductionGoal:
-    """Convert an ``OrderIntent`` to the optimiser's ``ProductionGoal``.
+def parse_deadline(value: str) -> datetime:
+    """Parse an ISO-8601 timestamp into an aware datetime.
 
-    Parses the string ISO-8601 deadline into a timezone-aware ``datetime``.
+    A trailing 'Z' is accepted (``datetime.fromisoformat`` only supports it from
+    Python 3.11) and timestamps without an offset are taken as local time.
     """
+    text = value.strip()
+    if text[-1:] in ("Z", "z"):
+        text = text[:-1] + "+00:00"
+    parsed = datetime.fromisoformat(text)
+    if parsed.tzinfo is None:
+        parsed = parsed.astimezone()
+    return parsed
+
+
+def intent_to_goal(intent: OrderIntent) -> ProductionGoal:
+    """Convert an ``OrderIntent`` to the optimiser's ``ProductionGoal``."""
     deadline_dt = None
     if intent.deadline:
         try:
-            deadline_dt = datetime.fromisoformat(intent.deadline)
-            if deadline_dt.tzinfo is None:
-                deadline_dt = deadline_dt.replace(tzinfo=timezone.utc)
+            deadline_dt = parse_deadline(intent.deadline)
         except ValueError as exc:
             raise ValueError(
                 f"order agent: bad ISO-8601 deadline from LLM: {intent.deadline!r}"
